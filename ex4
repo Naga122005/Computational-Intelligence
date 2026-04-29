@@ -1,1 +1,146 @@
 
+import math
+import pandas as pd
+from collections import Counter
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+def calculate_entropy(data):
+    total = len(data)
+    if total == 0: return 0, "0"
+    counts = Counter(data)
+    ent = sum(-(count/total) * math.log2(count/total) for count in counts.values())
+    steps = [f"({count}/{total})*log2({count}/{total})" for count in counts.values()]
+    return abs(round(ent, 4)), f"- sum({' + '.join(steps)})"
+
+def calculate_gini(data):
+    total = len(data)
+    if total == 0: return 0, "0"
+    counts = Counter(data)
+    sum_sq = sum((count / total)**2 for count in counts.values())
+    steps = [f"({count}/{total})^2" for count in counts.values()]
+    return abs(round(1 - sum_sq, 4)), f"1 - ({' + '.join(steps)})
+
+def manual_split_logic(dataset, attribute, target, criterion):
+    target_values = [row[target] for row in dataset]
+    values = sorted(list(set(str(row[attribute]) for row in dataset)))
+    weighted_impurity = 0
+
+    print(f"\n--- Analyzing Attribute: '{attribute}' ---")
+    for val in values:
+        subset = [row for row in dataset if str(row[attribute]) == val]
+        subset_targets = [row[target] for row in subset]
+        weight = len(subset) / len(dataset)
+
+        imp_val, formula = calculate_entropy(subset_targets) if criterion == "entropy" else calculate_gini(subset_targets)
+        weighted_impurity += weight * imp_val
+        print(f"  Value '{val}': Impurity = {formula} = {imp_val:.4f} (Weight: {len(subset)}/{len(dataset)})")
+
+    if criterion == "entropy":
+        parent_val, parent_form = calculate_entropy(target_values)
+        gain = parent_val - weighted_impurity
+        print(f"  Parent Entropy: {parent_form} = {parent_val:.4f}")
+        print(f"  INFO GAIN: {parent_val:.4f} - {weighted_impurity:.4f} = {gain:.4f}")
+        return gain
+    else:
+        print(f"  TOTAL WEIGHTED GINI: {weighted_impurity:.4f}")
+        return weighted_impurity
+
+def build_manual_tree(dataset, attributes, target, criterion):
+    target_values = [row[target] for row in dataset]
+    if len(set(target_values)) == 1: return target_values[0]
+    if not attributes: return Counter(target_values).most_common(1)[0][0]
+
+    metrics = {attr: manual_split_logic(dataset, attr, target, criterion) for attr in attributes}
+    best_attr = max(metrics, key=metrics.get) if criterion == "entropy" else min(metrics, key=metrics.get)
+
+    print(f"\n[WINNER]: '{best_attr}' selected.")
+    tree = {best_attr: {}}
+    for val in sorted(list(set(str(row[best_attr]) for row in dataset))):
+        subset = [row for row in dataset if str(row[best_attr]) == val]
+        tree[best_attr][val] = build_manual_tree(subset, [a for a in attributes if a != best_attr], target, criterion)
+    return tree
+
+
+def csv_mode(criterion):
+    path = input("\nEnter CSV path: ")
+    target_input = input("Enter target column: ").strip()
+
+    try:
+        try: # Delimiter detection
+            df = pd.read_csv(path, sep=';')
+            if target_input.lower() not in [c.lower() for c in df.columns]: raise ValueError
+        except:
+            df = pd.read_csv(path, sep=',')
+
+        df.columns = [c.strip() for c in df.columns]
+        target = next((c for c in df.columns if c.lower() == target_input.lower()), None)
+
+        # 1. SPLIT INFO
+        X = df.drop(columns=[target])
+        y = df[target]
+        X_train_raw, X_test_raw, y_train_raw, y_test_raw = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        print("\n" + "="*40)
+        print(f"SPLIT INFO")
+        print(f"Total Records    : {len(df)}")
+        print(f"Training Records : {len(X_train_raw)} (80%)")
+        print(f"Testing Records  : {len(X_test_raw)} (20%)")
+        print("="*40)
+
+        # 2. ENCODING & PERFORMANCE
+        le = LabelEncoder()
+        for col in X.columns:
+            if X[col].dtype == 'object':
+                X[col] = le.fit_transform(X[col].astype(str))
+        y_encoded = le.fit_transform(y.astype(str))
+
+        X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
+
+        model = DecisionTreeClassifier(criterion=criterion)
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+
+        print("\nPERFORMANCE METRICS")
+        print(f"Accuracy  : {accuracy_score(y_test, y_pred):.4f}")
+        print(f"Precision : {precision_score(y_test, y_pred, average='weighted'):.4f}")
+        print(f"Recall    : {recall_score(y_test, y_pred, average='weighted'):.4f}")
+        print(f"F1 Score  : {f1_score(y_test, y_pred, average='weighted'):.4f}")
+        print("="*40)
+
+    except Exception as e:
+        print(f"Error: {e}")
+
+
+def main():
+    while True:
+        print("\n===== DECISION TREE MENU =====")
+        print("1. Manual\n2. CSV \n3. Exit")
+        choice = input("\nSelect Mode: ")
+        if choice == '3': break
+
+        crit = "entropy" if input("Criterion: 1. Entropy 2. Gini: ") == "1" else "gini"
+
+        if choice == '1':
+            attr_in = input("Attributes (comma separated): ")
+            attrs = [a.strip() for a in attr_in.split(",")]
+            target = input("Target column: ")
+            n = int(input("Records: "))
+            dataset = []
+            for i in range(n):
+                vals = input(f"Row {i+1}: ").replace(",", " ").split()
+                row = {a: v for a, v in zip(attrs, vals)}
+                row[target] = vals[-1]
+                dataset.append(row)
+
+            print("\nBUILDING TREE WITH INTERMEDIARY STEPS...")
+            tree = build_manual_tree(dataset, attrs, target, crit)
+            print(f"\nFINAL TREE STRUCTURE:\n{tree}")
+
+        elif choice == '2':
+            csv_mode(crit)
+
+if __name__ == "__main__":
+    main()
